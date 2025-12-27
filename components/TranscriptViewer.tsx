@@ -47,11 +47,18 @@ export function TranscriptViewer({
   }, [selectedLineNumber]);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Transcript Viewer</CardTitle>
+    <Card className="border-2 shadow-lg">
+      <CardHeader className="bg-muted/30 border-b">
+        <CardTitle className="text-xl flex items-center gap-2">
+          <span>Transcript Viewer</span>
+          {issues.length > 0 && (
+            <span className="text-sm font-normal text-muted-foreground">
+              ({issues.length} {issues.length === 1 ? 'issue' : 'issues'} found)
+            </span>
+          )}
+        </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="p-0">
         <ScrollArea className="h-[600px] w-full">
           <div className="font-mono text-sm">
             {lines.map((line, index) => {
@@ -69,8 +76,8 @@ export function TranscriptViewer({
                     }
                   }}
                   className={cn(
-                    'flex gap-4 px-2 py-1 border-l-4 transition-colors',
-                    isSelected && 'bg-accent',
+                    'flex gap-4 px-4 py-2 border-l-4 transition-all hover:bg-muted/50 cursor-pointer',
+                    isSelected && 'bg-accent border-l-primary shadow-sm',
                     severity === 'blocking' && 'border-l-red-500 bg-red-50 dark:bg-red-950/20',
                     severity === 'review' && !isSelected && 'border-l-yellow-500 bg-yellow-50 dark:bg-yellow-950/20',
                     severity === 'info' && !isSelected && 'border-l-blue-500 bg-blue-50 dark:bg-blue-950/20',

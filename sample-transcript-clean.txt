@@ -1,0 +1,18 @@
+Q: Good morning. Can you state your name for the record, please?
+A: Yes, my name is John Smith.
+Q: Thank you, Mr. Smith. Can you tell us what happened on the evening of March 15th?
+A: Sure. I was walking down Main Street when I saw the incident occur.
+Q: And what exactly did you see?
+A: I saw a car accident between two vehicles at the intersection of 5th Avenue and Main Street.
+Q: Can you describe the vehicles involved?
+A: One was a red sedan, and the other was a blue truck. The red sedan appeared to run a red light.
+Q: Did you see any other witnesses present?
+A: Yes, there were several people standing on the corner who also witnessed the accident.
+Q: And what time did this occur?
+A: It was approximately 6:30 PM on March 15th.
+Q: Did you speak to anyone at the scene?
+A: Yes, I spoke with the driver of the red sedan, whose name was Michael Johnson.
+Q: What did Mr. Johnson tell you?
+A: He said that the traffic light was yellow when he entered the intersection, not red.
+Q: Thank you for your testimony. That will be all for now.
+

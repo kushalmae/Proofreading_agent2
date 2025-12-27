@@ -1,7 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Download, FileJson, FileSpreadsheet } from 'lucide-react';
+import { FileJson, FileSpreadsheet } from 'lucide-react';
 import { exportToJSON, exportToCSV, downloadFile } from '@/lib/export';
 import type { Issue } from '@/types/proofread';
 
@@ -25,11 +25,12 @@ export function ExportButtons({ issues }: ExportButtonsProps) {
   }
 
   return (
-    <div className="flex gap-2">
+    <div className="flex gap-3">
       <Button
         variant="outline"
         onClick={handleExportJSON}
-        className="gap-2"
+        className="gap-2 border-2"
+        size="lg"
       >
         <FileJson className="h-4 w-4" />
         Export JSON
@@ -37,7 +38,8 @@ export function ExportButtons({ issues }: ExportButtonsProps) {
       <Button
         variant="outline"
         onClick={handleExportCSV}
-        className="gap-2"
+        className="gap-2 border-2"
+        size="lg"
       >
         <FileSpreadsheet className="h-4 w-4" />
         Export CSV
