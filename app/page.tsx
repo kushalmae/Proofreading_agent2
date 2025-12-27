@@ -30,6 +30,7 @@ interface ErrorResponse {
 
 export default function Home() {
   const [transcript, setTranscript] = useState('');
+  const [originalTranscript, setOriginalTranscript] = useState(''); // Store original when proofreading starts
   const [correctedTranscript, setCorrectedTranscript] = useState('');
   const [issues, setIssues] = useState<Issue[]>([]);
   const [acceptedIssueIds, setAcceptedIssueIds] = useState<Set<string>>(new Set());
@@ -49,6 +50,7 @@ export default function Home() {
     setIssues([]);
     setAcceptedIssueIds(new Set());
     setCorrectedTranscript('');
+    setOriginalTranscript(transcript); // Store original transcript
     setSelectedIssue(undefined);
     setSelectedLineNumber(undefined);
 
@@ -85,9 +87,10 @@ export default function Home() {
     newAccepted.add(getIssueId(issue));
     setAcceptedIssueIds(newAccepted);
     
-    // Apply fix to corrected transcript (original stays unchanged)
+    // Apply fix to corrected transcript (always use original transcript as base)
+    const baseTranscript = originalTranscript || transcript;
     const corrected = applyFixesToTranscript(
-      transcript,
+      baseTranscript,
       issues,
       newAccepted
     );
@@ -99,12 +102,13 @@ export default function Home() {
     newAccepted.delete(getIssueId(issue));
     setAcceptedIssueIds(newAccepted);
     
-    // Reapply remaining accepted fixes
+    // Reapply remaining accepted fixes (always use original transcript as base)
+    const baseTranscript = originalTranscript || transcript;
     if (newAccepted.size === 0) {
       setCorrectedTranscript('');
     } else {
       const corrected = applyFixesToTranscript(
-        transcript,
+        baseTranscript,
         issues,
         newAccepted
       );
@@ -206,16 +210,18 @@ export default function Home() {
               {/* Corrected Transcript View */}
               {acceptedIssueIds.size > 0 && correctedTranscript && (
                 <CorrectedTranscriptViewer
-                  originalTranscript={transcript}
+                  originalTranscript={originalTranscript || transcript}
                   correctedTranscript={correctedTranscript}
                   acceptedCount={acceptedIssueIds.size}
+                  issues={issues}
+                  acceptedIssueIds={acceptedIssueIds}
                 />
               )}
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 space-y-6">
                   <TranscriptViewer
-                    transcript={transcript}
+                    transcript={originalTranscript || transcript}
                     issues={issues}
                     selectedLineNumber={selectedLineNumber}
                     onLineClick={handleLineClick}
@@ -230,7 +236,7 @@ export default function Home() {
                 <div className="lg:sticky lg:top-20 lg:h-fit">
                   <IssueDetails 
                     issue={selectedIssue} 
-                    transcript={transcript}
+                    transcript={originalTranscript || transcript}
                     acceptedIssueIds={acceptedIssueIds}
                     onAccept={handleAcceptFix}
                     onReject={handleRejectFix}
