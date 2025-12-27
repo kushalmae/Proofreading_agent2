@@ -13,7 +13,7 @@ import { PortalHeader } from '@/components/PortalHeader';
 import { PortalStats } from '@/components/PortalStats';
 import { Loader2, AlertCircle, Sparkles } from 'lucide-react';
 import type { Issue } from '@/types/proofread';
-import { getIssueId, applyFixesToTranscript } from '@/lib/applyFixes';
+import { getIssueId, applyFixesToTranscript, applyFixesToTranscriptWithAI } from '@/lib/applyFixes';
 
 interface ProofreadResponse {
   issues: Issue[];
@@ -37,6 +37,7 @@ export default function Home() {
   const [selectedIssue, setSelectedIssue] = useState<Issue | undefined>();
   const [selectedLineNumber, setSelectedLineNumber] = useState<number | undefined>();
   const [loading, setLoading] = useState(false);
+  const [applyingFix, setApplyingFix] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleProofread = async () => {
@@ -82,37 +83,66 @@ export default function Home() {
     }
   };
 
-  const handleAcceptFix = (issue: Issue) => {
+  const handleAcceptFix = async (issue: Issue) => {
     const newAccepted = new Set(acceptedIssueIds);
     newAccepted.add(getIssueId(issue));
     setAcceptedIssueIds(newAccepted);
+    setApplyingFix(true);
     
-    // Apply fix to corrected transcript (always use original transcript as base)
+    // Apply fix to corrected transcript using AI agent (always use original transcript as base)
     const baseTranscript = originalTranscript || transcript;
-    const corrected = applyFixesToTranscript(
-      baseTranscript,
-      issues,
-      newAccepted
-    );
-    setCorrectedTranscript(corrected);
-  };
-
-  const handleRejectFix = (issue: Issue) => {
-    const newAccepted = new Set(acceptedIssueIds);
-    newAccepted.delete(getIssueId(issue));
-    setAcceptedIssueIds(newAccepted);
-    
-    // Reapply remaining accepted fixes (always use original transcript as base)
-    const baseTranscript = originalTranscript || transcript;
-    if (newAccepted.size === 0) {
-      setCorrectedTranscript('');
-    } else {
+    try {
+      const corrected = await applyFixesToTranscriptWithAI(
+        baseTranscript,
+        issues,
+        newAccepted
+      );
+      setCorrectedTranscript(corrected);
+    } catch (error) {
+      console.error('Error applying fix with AI:', error);
+      // Fallback to rule-based approach
       const corrected = applyFixesToTranscript(
         baseTranscript,
         issues,
         newAccepted
       );
       setCorrectedTranscript(corrected);
+    } finally {
+      setApplyingFix(false);
+    }
+  };
+
+  const handleRejectFix = async (issue: Issue) => {
+    const newAccepted = new Set(acceptedIssueIds);
+    newAccepted.delete(getIssueId(issue));
+    setAcceptedIssueIds(newAccepted);
+    setApplyingFix(true);
+    
+    // Reapply remaining accepted fixes using AI agent (always use original transcript as base)
+    const baseTranscript = originalTranscript || transcript;
+    if (newAccepted.size === 0) {
+      setCorrectedTranscript('');
+      setApplyingFix(false);
+    } else {
+      try {
+        const corrected = await applyFixesToTranscriptWithAI(
+          baseTranscript,
+          issues,
+          newAccepted
+        );
+        setCorrectedTranscript(corrected);
+      } catch (error) {
+        console.error('Error applying fix with AI:', error);
+        // Fallback to rule-based approach
+        const corrected = applyFixesToTranscript(
+          baseTranscript,
+          issues,
+          newAccepted
+        );
+        setCorrectedTranscript(corrected);
+      } finally {
+        setApplyingFix(false);
+      }
     }
   };
 
@@ -240,6 +270,7 @@ export default function Home() {
                     acceptedIssueIds={acceptedIssueIds}
                     onAccept={handleAcceptFix}
                     onReject={handleRejectFix}
+                    disabled={applyingFix}
                   />
                 </div>
               </div>

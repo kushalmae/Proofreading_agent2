@@ -1,284 +1,429 @@
 import type { Issue } from '@/types/proofread';
 
 /**
- * Attempts to apply a suggested fix to a line of text
+ * Extract word pairs (original -> corrected) from issue description and fix
+ * Returns [originalWord, correctedWord] or null if not found
+ */
+function extractWordPair(issue: Issue): [string, string] | null {
+  const desc = issue.description;
+  const fix = issue.suggested_fix;
+  
+  // Strategy 1: Look for quoted pairs in description
+  // Pattern: "'dr.' should be 'Dr.'" or "'todays' should be 'today's'"
+  const quotedPairMatch = desc.match(/["']([^"']+)["']\s+should\s+be\s+(?:capitalized\s+as\s+)?["']([^"']+)["']/i);
+  if (quotedPairMatch) {
+    const pair = [quotedPairMatch[1].trim(), quotedPairMatch[2].trim()] as [string, string];
+    console.log('[extractWordPair] Strategy 1 (quoted pair in description):', pair);
+    return pair;
+  }
+  
+  // Strategy 2: Look for quoted pairs in fix
+  const fixQuotedPairMatch = fix.match(/["']([^"']+)["']\s+should\s+be\s+["']([^"']+)["']/i);
+  if (fixQuotedPairMatch) {
+    const pair = [fixQuotedPairMatch[1].trim(), fixQuotedPairMatch[2].trim()] as [string, string];
+    console.log('[extractWordPair] Strategy 2 (quoted pair in fix):', pair);
+    return pair;
+  }
+  
+  // Strategy 3: Handle "to make it" pattern - most reliable for apostrophe fixes
+  // Pattern: "Add apostrophe to 'todays' to make it 'today's'"
+  // We need to extract both words, handling apostrophes in the second word
+  // Use indexOf to find "to make it" and then extract the quoted word after it
+  const makeItIndex = fix.toLowerCase().indexOf('to make it');
+  if (makeItIndex !== -1) {
+    const afterMakeIt = fix.substring(makeItIndex + 'to make it'.length).trim();
+    // Find the quoted word after "to make it" - handle apostrophes inside quotes
+    const quoteMatch = afterMakeIt.match(/^(["'])(.*?)\1/);
+    if (quoteMatch) {
+      const secondWord = quoteMatch[2]?.trim() || '';
+      // Now find the first quoted word before "to make it"
+      const beforeMakeIt = fix.substring(0, makeItIndex);
+      const firstQuoteMatch = beforeMakeIt.match(/(["'])([^'"]*?)\1(?=[^'"]*to make it)/i);
+      if (firstQuoteMatch) {
+        const firstWord = firstQuoteMatch[2]?.trim() || '';
+        if (firstWord && secondWord && firstWord !== secondWord) {
+          const pair = [firstWord, secondWord] as [string, string];
+          console.log('[extractWordPair] Strategy 3a (make it pattern with indexOf):', pair);
+          return pair;
+        }
+      }
+      // Fallback: try to find any quoted word before "to make it"
+      const allBeforeQuotes = beforeMakeIt.match(/(["'])([^'"]*?)\1/g);
+      if (allBeforeQuotes && allBeforeQuotes.length > 0) {
+        const firstWord = allBeforeQuotes[allBeforeQuotes.length - 1]?.replace(/["']/g, '').trim() || '';
+        if (firstWord && secondWord && firstWord !== secondWord) {
+          const pair = [firstWord, secondWord] as [string, string];
+          console.log('[extractWordPair] Strategy 3b (make it pattern fallback):', pair);
+          return pair;
+        }
+      }
+    }
+  }
+  
+  // Strategy 3c: Extract quoted strings (fallback - may not handle apostrophes inside quotes well)
+  const descQuoted = desc.match(/["']([^"']+)["']/g) || [];
+  const fixQuoted = fix.match(/["']([^"']+)["']/g) || [];
+  const allQuoted = Array.from(new Set([...descQuoted, ...fixQuoted]));
+  
+  if (allQuoted.length >= 2) {
+    
+    // Fallback: use first and last (but prefer from fix if available)
+    let first: string;
+    let last: string;
+    
+    if (fixQuoted.length >= 2) {
+      // Use pairs from fix if available (more reliable)
+      first = fixQuoted[0]?.replace(/["']/g, '').trim() || '';
+      last = fixQuoted[fixQuoted.length - 1]?.replace(/["']/g, '').trim() || '';
+    } else if (allQuoted.length >= 2) {
+      // Otherwise use from combined list
+      first = allQuoted[0]?.replace(/["']/g, '').trim() || '';
+      last = allQuoted[allQuoted.length - 1]?.replace(/["']/g, '').trim() || '';
+    } else {
+      first = '';
+      last = '';
+    }
+    
+    if (first && last && first.toLowerCase() !== last.toLowerCase()) {
+      const pair = [first, last] as [string, string];
+      console.log('[extractWordPair] Strategy 3b (first/last quoted):', pair, 'from', allQuoted);
+      return pair;
+    }
+  }
+  
+  // Strategy 4: For capitalization, extract single quoted word and capitalize it
+  if (issue.category === 'capitalization') {
+    const descQuoted = desc.match(/["']([^"']+)["']/g) || [];
+    const fixQuoted = fix.match(/["']([^"']+)["']/g) || [];
+    const singleQuoted = [...descQuoted, ...fixQuoted];
+    
+    if (singleQuoted.length === 1) {
+      const word = singleQuoted[0]?.replace(/["']/g, '').trim();
+      if (word && word.length > 0 && word[0] === word[0].toLowerCase()) {
+        const pair = [word, word.charAt(0).toUpperCase() + word.slice(1)] as [string, string];
+        console.log('[extractWordPair] Strategy 4 (single quote capitalization):', pair);
+        return pair;
+      }
+    }
+  }
+  
+  console.log('[extractWordPair] No pair found. Description:', desc, 'Fix:', fix, 'Category:', issue.category);
+  return null;
+}
+
+/**
+ * Apply word replacement (handles case preservation)
+ */
+function replaceWord(text: string, originalWord: string, correctedWord: string): string {
+  console.log('[replaceWord] Attempting to replace:', { originalWord, correctedWord, inText: text });
+  
+  // Escape special regex characters
+  const escaped = originalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  
+  // Try word boundary match first (for words without punctuation)
+  let regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+  let result = text;
+  let changed = false;
+  
+  result = result.replace(regex, (match) => {
+    changed = true;
+    console.log('[replaceWord] Word boundary match found:', match);
+    // Preserve case of first letter
+    if (match[0] === match[0].toUpperCase()) {
+      const replacement = correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
+      console.log('[replaceWord] Replacing with (capitalized):', replacement);
+      return replacement;
+    }
+    console.log('[replaceWord] Replacing with (lowercase):', correctedWord);
+    return correctedWord;
+  });
+  
+  // If word boundary didn't work (e.g., for "dr." with punctuation), try without boundaries
+  if (!changed) {
+    console.log('[replaceWord] Word boundary match failed, trying without boundaries');
+    // Escape period specially for regex
+    const escapedForRegex = escaped.replace(/\./g, '\\.');
+    regex = new RegExp(escapedForRegex, 'gi');
+    
+    result = text.replace(regex, (match) => {
+      console.log('[replaceWord] Non-boundary match found:', match);
+      // Preserve case of first letter
+      if (match[0] === match[0].toUpperCase()) {
+        const replacement = correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
+        console.log('[replaceWord] Replacing with (capitalized):', replacement);
+        return replacement;
+      }
+      console.log('[replaceWord] Replacing with (lowercase):', correctedWord);
+      return correctedWord;
+    });
+  }
+  
+  const wasChanged = result !== text;
+  console.log('[replaceWord] Result:', { wasChanged, original: text, result });
+  return result;
+}
+
+/**
+ * Apply punctuation fix (period, comma, question mark, apostrophe)
+ */
+function applyPunctuationFix(text: string, issue: Issue): string {
+  const fix = issue.suggested_fix.toLowerCase();
+  
+  // Apostrophe fixes - use word pair extraction
+  if (fix.includes('apostrophe') || fix.includes("'") || fix.includes('make it')) {
+    const wordPair = extractWordPair(issue);
+    if (wordPair) {
+      const [original, corrected] = wordPair;
+      return replaceWord(text, original, corrected);
+    }
+  }
+  
+  // Add period at end
+  if (fix.includes('add period') && (fix.includes('end') || fix.includes('at end'))) {
+    if (text && !text.match(/[.!?]$/)) {
+      return text + '.';
+    }
+  }
+  
+  // Add comma
+  if (fix.includes('add comma')) {
+    if (fix.includes('before')) {
+      const beforeMatch = issue.suggested_fix.match(/before\s+["']?(\w+)/i);
+      if (beforeMatch) {
+        const beforeText = beforeMatch[1].toLowerCase();
+        const index = text.toLowerCase().indexOf(beforeText);
+        if (index > 0 && text[index - 1] !== ',') {
+          return text.slice(0, index).trim() + ', ' + text.slice(index);
+        }
+      }
+    } else {
+      // Generic: add before common conjunctions
+      const conjunctions = ['and', 'but', 'or', 'so'];
+      for (const conj of conjunctions) {
+        const index = text.toLowerCase().indexOf(' ' + conj + ' ');
+        if (index > 0 && text[index] !== ',') {
+          return text.slice(0, index + 1) + ', ' + text.slice(index + 1);
+        }
+      }
+    }
+  }
+  
+  // Add question mark
+  if (fix.includes('add question mark') || fix.includes('add ?') || fix.includes('add question')) {
+    if (text && !text.match(/[?]$/)) {
+      return text.replace(/[.!]$/, '') + '?';
+    }
+  }
+  
+  // Remove punctuation
+  if (fix.includes('remove')) {
+    if (fix.includes('period') || fix.includes('.')) {
+      return text.replace(/\.$/, '');
+    }
+    if (fix.includes('comma') || fix.includes(',')) {
+      return fix.includes('all') ? text.replace(/,/g, '') : text.replace(/,/, '');
+    }
+  }
+  
+  return text;
+}
+
+/**
+ * Apply capitalization fix
+ */
+function applyCapitalizationFix(text: string, issue: Issue): string {
+  // Try to extract word pair first
+  const wordPair = extractWordPair(issue);
+  if (wordPair) {
+    const [original, corrected] = wordPair;
+    return replaceWord(text, original, corrected);
+  }
+  
+  // Fallback: capitalize first letter of line
+  const fix = issue.suggested_fix.toLowerCase();
+  if (fix.includes('capitalize') && text.length > 0 && text[0] === text[0].toLowerCase()) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  
+  return text;
+}
+
+/**
+ * Apply spelling fix
+ */
+function applySpellingFix(text: string, issue: Issue): string {
+  const wordPair = extractWordPair(issue);
+  if (wordPair) {
+    const [original, corrected] = wordPair;
+    return replaceWord(text, original, corrected);
+  }
+  
+  // Try pattern matching: "X should be Y" or "Change X to Y"
+  const desc = issue.description.toLowerCase();
+  const fix = issue.suggested_fix.toLowerCase();
+  
+  const patternMatch = desc.match(/(\w+)\s+should\s+be\s+(\w+)/i) ||
+                      fix.match(/change\s+(\w+)\s+to\s+(\w+)/i) ||
+                      fix.match(/(\w+)\s+should\s+be\s+(\w+)/i);
+  
+  if (patternMatch) {
+    return replaceWord(text, patternMatch[1], patternMatch[2]);
+  }
+  
+  return text;
+}
+
+/**
+ * Use AI agent to apply a fix (async)
+ */
+export async function applyFixToLineWithAI(lineText: string, issue: Issue): Promise<string> {
+  try {
+    const response = await fetch('/api/apply-fix', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ lineText, issue }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to apply fix with AI');
+    }
+
+    const data = await response.json();
+    return data.correctedLine;
+  } catch (error) {
+    console.error('[applyFixToLineWithAI] Error:', error);
+    // Fallback to rule-based approach on error
+    return applyFixToLine(lineText, issue);
+  }
+}
+
+/**
+ * Attempts to apply a suggested fix to a line of text (rule-based approach)
  * Since suggested_fix is an instruction, we need to interpret it
  */
 export function applyFixToLine(lineText: string, issue: Issue): string {
-  const fix = issue.suggested_fix.toLowerCase();
-  const description = issue.description.toLowerCase();
-  // Preserve original whitespace - we'll restore it at the end
+  // Preserve original whitespace
   const leadingWhitespace = lineText.match(/^\s*/)?.[0] || '';
   const trailingWhitespace = lineText.match(/\s*$/)?.[0] || '';
   let result = lineText.trim();
-  const originalResult = result; // Keep track to see if we actually made changes
+  const originalResult = result;
 
-  // Capitalization fixes
-  if (issue.category === 'capitalization') {
-    // Try to extract the word that needs to be capitalized from description or fix
-    const description = issue.description.toLowerCase();
-    const fixLower = fix.toLowerCase();
+  // Apply fix based on category
+  switch (issue.category) {
+    case 'capitalization':
+      result = applyCapitalizationFix(result, issue);
+      break;
     
-    // Pattern 1: Look for quoted word (e.g., "smith" should be "Smith")
-    let wordMatch = description.match(/["']([a-z]+)["']/i) || fixLower.match(/["']([a-z]+)["']/i);
+    case 'punctuation':
+      result = applyPunctuationFix(result, issue);
+      break;
     
-    // Pattern 2: Look for word after "capitalize" (e.g., "capitalize smith")
-    if (!wordMatch) {
-      wordMatch = description.match(/capitalize\s+(["']?)([a-z]+)\1/i) || 
-                  fixLower.match(/capitalize\s+(["']?)([a-z]+)\1/i);
-      if (wordMatch) {
-        wordMatch = [wordMatch[0], wordMatch[2]]; // Extract just the word
-      }
-    }
+    case 'spelling':
+      result = applySpellingFix(result, issue);
+      break;
     
-    // Pattern 3: Look for "X should be Y" pattern
-    if (!wordMatch) {
-      const shouldBeMatch = description.match(/([a-z]+)\s+should\s+be/i);
-      if (shouldBeMatch) {
-        wordMatch = [shouldBeMatch[0], shouldBeMatch[1]];
-      }
-    }
+    case 'speaker_formatting':
+      // Can't auto-apply formatting fixes
+      break;
     
-    // Pattern 4: Extract any lowercase word that appears in both description and the line
-    if (!wordMatch) {
-      const wordsInLine = result.toLowerCase().match(/\b[a-z]+\b/g) || [];
-      for (const word of wordsInLine) {
-        if (description.includes(word) && word.length > 2) {
-          // Check if this word is lowercase in the line but should be capitalized
-          const regex = new RegExp(`\\b${word}\\b`, 'i');
-          if (regex.test(result) && result.match(regex)?.[0] === result.match(regex)?.[0].toLowerCase()) {
-            wordMatch = [word, word];
-            break;
-          }
-        }
+    default:
+      // Unknown category - try generic word pair extraction
+      const wordPair = extractWordPair(issue);
+      if (wordPair) {
+        result = replaceWord(result, wordPair[0], wordPair[1]);
       }
-    }
-    
-    // If we found a word to fix, capitalize it
-    if (wordMatch) {
-      const wordToFix = wordMatch[1].toLowerCase();
-      const capitalizedWord = wordToFix.charAt(0).toUpperCase() + wordToFix.slice(1);
-      
-      // Replace the word (case-insensitive, whole word match)
-      const regex = new RegExp(`\\b${wordToFix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      result = result.replace(regex, (match) => {
-        // Preserve the case pattern but capitalize first letter
-        return match.charAt(0).toUpperCase() + match.slice(1).toLowerCase();
-      });
-    }
-    // If no specific word found, capitalize first letter of line
-    else if (fix.includes('capitalize') || fix.includes('should be capitalized')) {
-      if (result.length > 0) {
-        result = result.charAt(0).toUpperCase() + result.slice(1);
-      }
-    }
-    // Lowercase fixes
-    else if (fix.includes('lowercase') || fix.includes('should be lowercase')) {
-      // Look for capitalized word to lowercase
-      const upperWordMatch = description.match(/["']([A-Z][a-z]+)["']/i) || 
-                            fixLower.match(/["']([A-Z][a-z]+)["']/i) ||
-                            description.match(/lowercase\s+(["']?)([A-Z][a-z]+)\1/i);
-      if (upperWordMatch) {
-        const wordToFix = upperWordMatch[1] || upperWordMatch[2];
-        const lowercasedWord = wordToFix.toLowerCase();
-        const regex = new RegExp(`\\b${wordToFix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-        result = result.replace(regex, lowercasedWord);
-      } else if (result.length > 0) {
-        result = result.charAt(0).toLowerCase() + result.slice(1);
-      }
-    }
   }
 
-  // Punctuation fixes
-  if (issue.category === 'punctuation') {
-    // Add apostrophe or handle word replacements (e.g., "Add apostrophe to 'todays' to make it 'today's'")
-    if (fix.includes('apostrophe') || fix.includes('make it')) {
-      // Extract all quoted strings from the fix - use the full suggested_fix, not lowercased
-      const quotedMatches = issue.suggested_fix.match(/["']([^"']+)["']/g);
-      if (quotedMatches && quotedMatches.length >= 2) {
-        // Usually: first quote is original word, last quote is corrected word
-        // Pattern: "Add apostrophe to 'todays' to make it 'today's'"
-        const originalWord = quotedMatches[0].replace(/["']/g, '').trim();
-        const correctedWord = quotedMatches[quotedMatches.length - 1].replace(/["']/g, '').trim();
-        
-        // Only proceed if words are actually different
-        if (originalWord.toLowerCase() !== correctedWord.toLowerCase()) {
-          // Escape special regex characters in the original word
-          const escapedOriginal = originalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          // Use word boundary, but be flexible about what comes before/after
-          const regex = new RegExp(`\\b${escapedOriginal}\\b`, 'gi');
-          
-          const beforeReplace = result;
-          result = result.replace(regex, (match) => {
-            // Preserve the case of the first letter, but use the corrected word structure
-            if (match[0] === match[0].toUpperCase()) {
-              return correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
-            }
-            return correctedWord;
-          });
-          
-          // If replacement didn't work, try without word boundaries as fallback
-          if (result === beforeReplace && result.toLowerCase().includes(originalWord.toLowerCase())) {
-            const indexRegex = new RegExp(escapedOriginal, 'gi');
-            result = result.replace(indexRegex, (match) => {
-              if (match[0] === match[0].toUpperCase()) {
-                return correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
-              }
-              return correctedWord;
-            });
-          }
-        }
-      } else if (quotedMatches && quotedMatches.length === 1) {
-        // Only one quoted word - try to extract both from context
-        // Look for "make it 'X'" pattern
-        const makeItMatch = issue.suggested_fix.match(/make\s+it\s+["']([^"']+)["']/i);
-        if (makeItMatch) {
-          const correctedWord = makeItMatch[1];
-          const originalWord = quotedMatches[0].replace(/["']/g, '');
-          
-          const regex = new RegExp(`\\b${originalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-          result = result.replace(regex, (match) => {
-            if (match[0] === match[0].toUpperCase()) {
-              return correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
-            }
-            return correctedWord;
-          });
-        } else {
-          // Try to find the word in the line that matches the pattern
-          // e.g., if fix says "add apostrophe to 'todays'", find "todays" and add apostrophe
-          const wordInQuote = quotedMatches[0].replace(/["']/g, '');
-          const wordRegex = new RegExp(`\\b${wordInQuote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-          if (wordRegex.test(result)) {
-            // Try common apostrophe patterns
-            // "todays" -> "today's", "its" -> "it's", etc.
-            result = result.replace(wordRegex, (match) => {
-              // For words ending in 's', add apostrophe before 's'
-              if (wordInQuote.toLowerCase().endsWith('s')) {
-                const base = wordInQuote.slice(0, -1);
-                const fixed = base + "'s";
-                return match[0] === match[0].toUpperCase() 
-                  ? fixed.charAt(0).toUpperCase() + fixed.slice(1)
-                  : fixed;
-              }
-              return match;
-            });
-          }
-        }
-      }
-    }
-    // Add period at end
-    else if (fix.includes('add period') && (fix.includes('end') || fix.includes('at end'))) {
-      if (result && !result.match(/[.!?]$/)) {
-        result = result + '.';
-      }
-    }
-    // Add comma
-    else if (fix.includes('add comma')) {
-      // Try to find where to add comma (simplified - just before common conjunctions)
-      if (fix.includes('before')) {
-        const beforeText = fix.match(/before ["']?(\w+)/i)?.[1]?.toLowerCase();
-        if (beforeText && result.toLowerCase().includes(beforeText)) {
-          const index = result.toLowerCase().indexOf(beforeText);
-          if (index > 0 && result[index - 1] !== ',') {
-            result = result.slice(0, index).trim() + ', ' + result.slice(index);
-          }
-        }
-      } else {
-        // Generic "add comma" - try to add before common conjunctions
-        const conjunctions = ['and', 'but', 'or', 'so'];
-        for (const conj of conjunctions) {
-          const index = result.toLowerCase().indexOf(' ' + conj + ' ');
-          if (index > 0 && result[index] !== ',') {
-            result = result.slice(0, index + 1) + ', ' + result.slice(index + 1);
-            break;
-          }
-        }
-      }
-    }
-    // Add question mark
-    else if (fix.includes('add question mark') || fix.includes('add ?') || fix.includes('add question')) {
-      // Replace existing punctuation at end with question mark, or add if none
-      if (result && !result.match(/[?]$/)) {
-        result = result.replace(/[.!]$/, '') + '?';
-      }
-    }
-    // Remove period/comma
-    else if (fix.includes('remove')) {
-      if (fix.includes('period') || fix.includes('.')) {
-        result = result.replace(/\.$/, '');
-      } else if (fix.includes('comma') || fix.includes(',')) {
-        // Remove the first comma or all commas if specified
-        if (fix.includes('all')) {
-          result = result.replace(/,/g, '');
-        } else {
-          result = result.replace(/,/, '');
-        }
-      }
-    }
-  }
-
-  // Spelling fixes - try to extract word replacement from description/fix
-  if (issue.category === 'spelling') {
-    // Try to find word replacement patterns in the description
-    // Pattern: "X should be Y" or "Change X to Y"
-    const replacementMatch = description.match(/(\w+)\s+should\s+be\s+(\w+)/i) ||
-                            issue.suggested_fix.match(/change\s+(\w+)\s+to\s+(\w+)/i) ||
-                            issue.suggested_fix.match(/(\w+)\s+should\s+be\s+(\w+)/i);
-    if (replacementMatch) {
-      const originalWord = replacementMatch[1];
-      const correctedWord = replacementMatch[2];
-      const regex = new RegExp(`\\b${originalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      result = result.replace(regex, (match) => {
-        if (match[0] === match[0].toUpperCase()) {
-          return correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
-        }
-        return correctedWord;
-      });
-    }
-    // If no replacement found, return original
-    return leadingWhitespace + result + trailingWhitespace;
-  }
-
-  // Speaker formatting (typically involves label consistency)
-  if (issue.category === 'speaker_formatting') {
-    // For formatting, suggestions are usually about consistency
-    // We can't easily auto-apply without more context
-    // Return original line with preserved whitespace
-    return leadingWhitespace + result + trailingWhitespace;
-  }
-
-  // Fallback: If no changes were made and we have quoted strings in the fix, try word replacement
+  // If nothing changed, try generic fallback
   if (result === originalResult) {
-    // Try to extract word replacements from quoted strings in the fix
-    const quotedMatches = issue.suggested_fix.match(/["']([^"']+)["']/g);
-    if (quotedMatches && quotedMatches.length >= 2) {
-      // Try using the first and last quoted strings as original and corrected
-      const originalWord = quotedMatches[0].replace(/["']/g, '');
-      const correctedWord = quotedMatches[quotedMatches.length - 1].replace(/["']/g, '');
-      
-      // Only replace if they're different (to avoid unnecessary replacements)
-      if (originalWord.toLowerCase() !== correctedWord.toLowerCase()) {
-        const regex = new RegExp(`\\b${originalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-        const newResult = result.replace(regex, (match) => {
-          if (match[0] === match[0].toUpperCase()) {
-            return correctedWord.charAt(0).toUpperCase() + correctedWord.slice(1);
-          }
-          return correctedWord;
-        });
-        // Only use the replacement if it actually changed something
-        if (newResult !== result) {
-          result = newResult;
-        }
-      }
+    const wordPair = extractWordPair(issue);
+    if (wordPair && wordPair[0].toLowerCase() !== wordPair[1].toLowerCase()) {
+      result = replaceWord(result, wordPair[0], wordPair[1]);
     }
   }
 
-  // Restore original whitespace
+  // Restore whitespace
   return leadingWhitespace + result + trailingWhitespace;
 }
 
 /**
- * Apply accepted fixes to transcript
+ * Apply accepted fixes to transcript using AI agent
+ * Returns a corrected version with accepted fixes applied
+ * Multiple fixes on the same line are applied sequentially
+ */
+export async function applyFixesToTranscriptWithAI(
+  transcript: string,
+  issues: Issue[],
+  acceptedIssueIds: Set<string>
+): Promise<string> {
+  if (!transcript || acceptedIssueIds.size === 0) {
+    return transcript;
+  }
+
+  const lines = transcript.split('\n');
+  const correctedLines = [...lines];
+
+  // Filter and sort accepted issues
+  const acceptedIssues = issues
+    .filter(issue => acceptedIssueIds.has(getIssueId(issue)))
+    .sort((a, b) => a.line_number - b.line_number);
+
+  if (acceptedIssues.length === 0) {
+    return transcript;
+  }
+
+  // Group by line number
+  const issuesByLine = acceptedIssues.reduce((acc, issue) => {
+    const lineNum = issue.line_number;
+    if (!acc[lineNum]) {
+      acc[lineNum] = [];
+    }
+    acc[lineNum].push(issue);
+    return acc;
+  }, {} as Record<number, Issue[]>);
+
+  // Apply fixes line by line, sequentially using AI
+  for (const [lineNumStr, lineIssues] of Object.entries(issuesByLine)) {
+    const lineIndex = parseInt(lineNumStr) - 1;
+    if (lineIndex >= 0 && lineIndex < correctedLines.length) {
+      let currentLine = correctedLines[lineIndex];
+      
+      // Apply each fix sequentially to the same line
+      for (const issue of lineIssues) {
+        const beforeFix = currentLine;
+        console.log(`[applyFixesToTranscriptWithAI] Applying fix to line ${lineIndex + 1}:`, {
+          category: issue.category,
+          fix: issue.suggested_fix,
+          description: issue.description,
+          lineBefore: beforeFix
+        });
+        
+        // Use AI agent to apply the fix
+        currentLine = await applyFixToLineWithAI(currentLine, issue);
+        
+        const wasApplied = beforeFix !== currentLine;
+        if (wasApplied) {
+          console.log(`[applyFixesToTranscriptWithAI] ✅ Fix applied successfully:`, {
+            lineBefore: beforeFix,
+            lineAfter: currentLine
+          });
+        } else {
+          console.warn(`[applyFixesToTranscriptWithAI] ⚠️ No change detected for line ${lineIndex + 1}`);
+        }
+      }
+      
+      correctedLines[lineIndex] = currentLine;
+    }
+  }
+
+  return correctedLines.join('\n');
+}
+
+/**
+ * Apply accepted fixes to transcript (rule-based approach, synchronous)
  * Returns a corrected version with accepted fixes applied
  * Multiple fixes on the same line are applied sequentially
  */
@@ -287,15 +432,23 @@ export function applyFixesToTranscript(
   issues: Issue[],
   acceptedIssueIds: Set<string>
 ): string {
+  if (!transcript || acceptedIssueIds.size === 0) {
+    return transcript;
+  }
+
   const lines = transcript.split('\n');
   const correctedLines = [...lines];
 
-  // Group accepted issues by line number
-  const acceptedIssues = issues.filter(issue => 
-    acceptedIssueIds.has(getIssueId(issue))
-  ).sort((a, b) => a.line_number - b.line_number);
+  // Filter and sort accepted issues
+  const acceptedIssues = issues
+    .filter(issue => acceptedIssueIds.has(getIssueId(issue)))
+    .sort((a, b) => a.line_number - b.line_number);
 
-  // Group by line number and apply fixes sequentially for each line
+  if (acceptedIssues.length === 0) {
+    return transcript;
+  }
+
+  // Group by line number
   const issuesByLine = acceptedIssues.reduce((acc, issue) => {
     const lineNum = issue.line_number;
     if (!acc[lineNum]) {
@@ -310,10 +463,35 @@ export function applyFixesToTranscript(
     const lineIndex = parseInt(lineNumStr) - 1;
     if (lineIndex >= 0 && lineIndex < correctedLines.length) {
       let currentLine = correctedLines[lineIndex];
+      
       // Apply each fix sequentially to the same line
-      lineIssues.forEach(issue => {
+      for (const issue of lineIssues) {
+        const beforeFix = currentLine;
+        console.log(`[applyFixesToTranscript] Applying fix to line ${lineIndex + 1}:`, {
+          category: issue.category,
+          fix: issue.suggested_fix,
+          description: issue.description,
+          lineBefore: beforeFix
+        });
+        
         currentLine = applyFixToLine(currentLine, issue);
-      });
+        
+        const wasApplied = beforeFix !== currentLine;
+        if (wasApplied) {
+          console.log(`[applyFixesToTranscript] ✅ Fix applied successfully:`, {
+            lineBefore: beforeFix,
+            lineAfter: currentLine
+          });
+        } else {
+          console.warn(`[applyFixesToTranscript] ❌ Fix NOT applied for line ${lineIndex + 1}:`, {
+            category: issue.category,
+            fix: issue.suggested_fix,
+            description: issue.description,
+            originalLine: beforeFix
+          });
+        }
+      }
+      
       correctedLines[lineIndex] = currentLine;
     }
   });
@@ -327,4 +505,3 @@ export function applyFixesToTranscript(
 export function getIssueId(issue: Issue): string {
   return `${issue.line_number}:${issue.category}:${issue.description}`;
 }
-

@@ -14,6 +14,7 @@ interface IssueDetailsProps {
   acceptedIssueIds?: Set<string>;
   onAccept?: (issue: Issue) => void;
   onReject?: (issue: Issue) => void;
+  disabled?: boolean;
 }
 
 const severityLabels: Record<Issue['severity'], string> = {
@@ -34,7 +35,8 @@ export function IssueDetails({
   transcript, 
   acceptedIssueIds = new Set(),
   onAccept,
-  onReject 
+  onReject,
+  disabled = false
 }: IssueDetailsProps) {
   if (!issue) {
     return (
@@ -127,9 +129,10 @@ export function IssueDetails({
               onClick={() => onAccept(issue)}
               className="flex-1 gap-2"
               size="sm"
+              disabled={disabled}
             >
               <Check className="h-4 w-4" />
-              Accept Fix
+              {disabled ? 'Applying...' : 'Accept Fix'}
             </Button>
           )}
           {onReject && (
@@ -138,9 +141,10 @@ export function IssueDetails({
               variant="outline"
               className="flex-1 gap-2"
               size="sm"
+              disabled={disabled}
             >
               <X className="h-4 w-4" />
-              Dismiss
+              {disabled ? 'Applying...' : 'Dismiss'}
             </Button>
           )}
         </CardFooter>
